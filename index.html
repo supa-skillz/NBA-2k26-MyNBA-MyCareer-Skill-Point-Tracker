@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>NBA 2K26 Skill Tracker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0A0E1A;font-family:'Segoe UI',system-ui,sans-serif;color:#E8EAF0}
+  input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none}
+  input[type=number]{-moz-appearance:textfield}
+  ::-webkit-scrollbar{width:6px}
+  ::-webkit-scrollbar-track{background:#0A0E1A}
+  ::-webkit-scrollbar-thumb{background:#1A2040;border-radius:3px}
+  textarea,input{font-family:'Segoe UI',system-ui,sans-serif}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const STORAGE_KEY = "2k26-tracker-v5";
+function loadAll() { try { const r=localStorage.getItem(STORAGE_KEY); if(r) return JSON.parse(r); } catch {} return null; }
+function saveAll(d) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch {} }
+
+const POSITIONS = ["PG","SG","SF","PF","C"];
+
+// ── ATTRIBUTES — full 2K26 list by official category ─────────────────────────
+const ATTRIBUTE_CATS = [
+  { id:"inside", label:"Inside Scoring", color:"#FF6B35", icon:"🏀",
+    attrs:["Close Shot","Driving Layup","Driving Dunk","Standing Dunk","Post Hook","Post Fade","Post Control","Hands","Draw Foul"] },
+  { id:"outside", label:"Outside Scoring", color:"#FFD700", icon:"🎯",
+    attrs:["Mid-Range Shot","Three-Point Shot","Free Throw","Shot IQ","Offensive Consistency"] },
+  { id:"playmaking", label:"Playmaking", color:"#00D4FF", icon:"⚡",
+    attrs:["Pass Accuracy","Ball Handle","Speed With Ball","Pass IQ","Pass Vision"] },
+  { id:"defense", label:"Defense", color:"#7B4FFF", icon:"🛡️",
+    attrs:["Interior Defense","Perimeter Defense","Steal","Block","Help Defense IQ","Pass Perception","Defensive Consistency","Offensive Rebound","Defensive Rebound"] },
+  { id:"athleticism", label:"Athleticism", color:"#00E676", icon:"💪",
+    attrs:["Speed","Agility","Strength","Vertical","Stamina","Hustle","Overall Durability","Intangibles"] },
+];
+
+function attrCost(v) { if(v<60)return 1; if(v<70)return 2; if(v<80)return 3; if(v<85)return 4; if(v<90)return 5; return 7; }
+
+// ── BADGES — real 2K26 badges with high SP costs ─────────────────────────────
+const BADGE_TIERS = ["Bronze","Silver","Gold","HoF","Legendary"];
+const BTC = { Bronze:"#CD7F32",Silver:"#C0C0C0",Gold:"#FFD700",HoF:"#FF4DFF",Legendary:"#FF9500" };
+// Bronze=50, Silver=90, Gold=140, HoF=200, Legendary=300
+const BTCost = { Bronze:50, Silver:90, Gold:140, HoF:200, Legendary:300 };
+
+const BADGE_CATS = [
+  { id:"finishing_b", label:"Finishing", color:"#FF6B35",
+    badges:[
+      "Float Game","Hook Specialist","Layup Mixmaster","Paint Prodigy",
+      "Physical Finisher","Post Fade Phenom","Post Powerhouse",
+      "Post-Up Poet","Posterizer","Rise Up"
+    ]
+  },
+  { id:"shooting_b", label:"Shooting", color:"#FFD700",
+    badges:[
+      "Deadeye","Limitless Range","Mini Marksman",
+      "Set Shot Specialist","Shifty Shooter"
+    ]
+  },
+  { id:"playmaking_b", label:"Playmaking", color:"#00D4FF",
+    badges:[
+      "Ankle Assassin","Bail Out","Break Starter","Dimer",
+      "Handles for Days","Lightning Launch","Strong Handle",
+      "Unpluckable","Versatile Visionary"
+    ]
+  },
+  { id:"defense_b", label:"Defense", color:"#7B4FFF",
+    badges:[
+      "Challenger","Glove","High-Flying Denier","Immovable Enforcer",
+      "Interceptor","Off-Ball Pest","On-Ball Menace",
+      "Paint Patroller","Pick Dodger","Post Lockdown"
+    ]
+  },
+  { id:"rebounding_b", label:"Rebounding", color:"#00E676",
+    badges:[
+      "Boxout Beast","Rebound Chaser"
+    ]
+  },
+  { id:"allaround_b", label:"All-Around", color:"#FFD700",
+    badges:[
+      "Brick Wall","Pogo Stick","Slippery Off-Ball"
+    ]
+  },
+];
+
+// ── STAT / GRADE LOGIC ────────────────────────────────────────────────────────
+const STAT_POINTS = {
+  pts:{ label:"Points",   formula:v=>Math.floor(v/5), hint:"1 pt per 5" },
+  ast:{ label:"Assists",  formula:v=>Math.floor(v/3), hint:"1 pt per 3" },
+  reb:{ label:"Rebounds", formula:v=>Math.floor(v/4), hint:"1 pt per 4" },
+  stl:{ label:"Steals",   formula:v=>v,               hint:"1 pt each"  },
+  blk:{ label:"Blocks",   formula:v=>v,               hint:"1 pt each"  },
+  to: { label:"Turnovers",formula:()=>0,              hint:"Grade only" },
+  win:{ label:"Win",      formula:v=>v*2,             hint:"2 pts"      },
+};
+const GRADE_BONUS = {"A+":3,"A":2,"A-":1,"B+":0,"B":0};
+
+function calcGrade({pts,ast,reb,stl,blk,to,win}) {
+  const e=(parseInt(pts)||0)/5+(parseInt(ast)||0)/3+(parseInt(reb)||0)/4+(parseInt(stl)||0)+(parseInt(blk)||0)+(parseInt(win)||0)*0.5-(parseInt(to)||0)*1.5;
+  if(e>=8)return"A+"; if(e>=6)return"A"; if(e>=4)return"A-"; if(e>=2)return"B+"; return"B";
+}
+const gc = g => g==="A+"?"#FFD700":g==="A"?"#00E676":g==="A-"?"#00D4FF":g==="B+"?"#8090B0":"#5A6080";
+
+const BLANK = () => ({ points:0,totalEarned:0,gamesPlayed:0,attrs:{},badges:{},history:[] });
+const NID = () => Date.now().toString();
+
+function getInitialData() {
+  const saved = loadAll();
+  if(saved && saved.players) return saved;
+  const id = NID();
+  return { activeId:id, players:{ [id]:{ id, name:"My Player", position:"PG", ...BLANK() } } };
+}
+
+// ── APP ───────────────────────────────────────────────────────────────────────
+function App() {
+  const [data, setData]         = useState(getInitialData);
+  const [view, setView]         = useState("attrs");
+  const [attrCat, setAttrCat]   = useState("inside");
+  const [badgeCat, setBadgeCat] = useState("finishing_b");
+  const [earnForm, setEarnForm] = useState({pts:"",ast:"",reb:"",stl:"",blk:"",to:"",win:""});
+  const [autoGrade, setAutoGrade] = useState("B");
+  const [earned, setEarned]     = useState(0);
+  const [flash, setFlash]       = useState(null);
+  const [xpAnim, setXpAnim]     = useState(false);
+  const [attrEdit, setAttrEdit] = useState(null);
+  const [badgeSetMode, setBadgeSetMode] = useState(null);
+  const [showImport, setShowImport] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [exportText, setExportText] = useState("");
+  const [showPlayers, setShowPlayers] = useState(false);
+  const [editingPlayer, setEditingPlayer] = useState(null);
+  const [pName, setPName] = useState("");
+  const [pPos,  setPPos]  = useState("PG");
+  const flashTimer = useRef(null);
+
+  const player = data.players[data.activeId];
+
+  useEffect(() => { saveAll(data); }, [data]);
+
+  useEffect(() => {
+    const grade = calcGrade(earnForm);
+    setAutoGrade(grade);
+    let pts = 0;
+    Object.entries(STAT_POINTS).forEach(([k,c]) => pts += c.formula(parseInt(earnForm[k])||0));
+    pts += GRADE_BONUS[grade]||0;
+    setEarned(pts);
+  }, [earnForm]);
+
+  function sf(msg, type="success") {
+    setFlash({msg,type});
+    clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFlash(null), 2800);
+  }
+
+  function upd(fn) {
+    setData(d => ({ ...d, players:{ ...d.players, [d.activeId]:fn(d.players[d.activeId]) } }));
+  }
+
+  function switchPlayer(id) {
+    setData(d => ({ ...d, activeId:id }));
+    setView("attrs"); setAttrEdit(null); setBadgeSetMode(null);
+    setEarnForm({pts:"",ast:"",reb:"",stl:"",blk:"",to:"",win:""});
+    setShowPlayers(false);
+  }
+
+  function openNew() { setEditingPlayer(null); setPName(""); setPPos("PG"); setShowPlayers(true); }
+  function openEdit(p) { setEditingPlayer(p); setPName(p.name); setPPos(p.position); setShowPlayers(true); }
+
+  function savePl() {
+    const name = pName.trim() || "Unnamed";
+    if(editingPlayer) {
+      setData(d => ({ ...d, players:{ ...d.players, [editingPlayer.id]:{ ...d.players[editingPlayer.id], name, position:pPos } } }));
+      sf(`${name} updated.`);
+    } else {
+      const id = NID();
+      setData(d => ({ ...d, activeId:id, players:{ ...d.players, [id]:{ id, name, position:pPos, ...BLANK() } } }));
+      sf(`${name} created!`); setView("attrs");
+    }
+    setShowPlayers(false);
+  }
+
+  function delPl(id) {
+    const others = Object.keys(data.players).filter(k => k !== id);
+    if(others.length === 0) return sf("Can't delete last career.", "error");
+    if(!confirm(`Delete ${data.players[id].name}? Cannot be undone.`)) return;
+    setData(d => { const p={...d.players}; delete p[id]; return { players:p, activeId:d.activeId===id?others[0]:d.activeId }; });
+    sf("Career deleted.", "error");
+  }
+
+  function upgradeAttr(attr) {
+    const cur = player.attrs[attr]??70;
+    const cost = attrCost(cur);
+    if(player.points < cost) return sf(`Need ${cost} SP — only have ${player.points}.`, "error");
+    const nv = cur+1;
+    upd(p => ({ ...p, points:p.points-cost, attrs:{...p.attrs,[attr]:nv},
+      history:[{id:Date.now(),game:null,pts:-cost,stats:`${attr}: ${cur} → ${nv}`,grade:null,date:new Date().toLocaleDateString()},...p.history].slice(0,60) }));
+    sf(`${attr} → ${nv}! (−${cost} SP)`);
+  }
+
+  function setBase(attr, val) {
+    const v = Math.max(25, Math.min(99, parseInt(val)||70));
+    upd(p => ({ ...p, attrs:{...p.attrs,[attr]:v} }));
+    setAttrEdit(null); sf(`${attr} set to ${v}.`);
+  }
+
+  function setBadgeBase(badge, tier) {
+    upd(p => ({ ...p, badges:{...p.badges,[badge]:tier},
+      history:[{id:Date.now(),game:null,pts:0,stats:`Badge set: ${badge} → ${tier}`,grade:null,date:new Date().toLocaleDateString()},...p.history].slice(0,60) }));
+    sf(`${badge} set to ${tier} — no SP spent.`);
+  }
+
+  function buyBadge(badge, tier) {
+    const tI = BADGE_TIERS.indexOf(tier);
+    const cur = player.badges[badge];
+    const cI = cur ? BADGE_TIERS.indexOf(cur) : -1;
+    if(cI >= tI) return sf("Already at this tier or higher.", "error");
+    if(tI !== cI+1) return sf("Must unlock previous tier first.", "error");
+    if(tier==="Legendary" && cur!=="HoF") return sf("Must be HoF to unlock Legendary.", "error");
+    const cost = BTCost[tier];
+    if(player.points < cost) return sf(`Need ${cost} SP — only have ${player.points}.`, "error");
+    upd(p => ({ ...p, points:p.points-cost, badges:{...p.badges,[badge]:tier},
+      history:[{id:Date.now(),game:null,pts:-cost,stats:`Badge: ${badge} → ${tier}`,grade:null,date:new Date().toLocaleDateString()},...p.history].slice(0,60) }));
+    sf(`${badge} → ${tier}!${tier==="Legendary"?" 🔱":""}`);
+  }
+
+  function submitGame() {
+    if(earned===0) return sf("No stats entered.", "error");
+    const summary = Object.entries(STAT_POINTS).map(([k,c]) => `${c.label}:${earnForm[k]||0}`).join(" ");
+    upd(p => ({ ...p, points:p.points+earned, totalEarned:p.totalEarned+earned, gamesPlayed:p.gamesPlayed+1,
+      history:[{id:Date.now(),game:p.gamesPlayed+1,pts:earned,stats:summary,grade:autoGrade,date:new Date().toLocaleDateString()},...p.history].slice(0,60) }));
+    setEarnForm({pts:"",ast:"",reb:"",stl:"",blk:"",to:"",win:""});
+    setXpAnim(true); setTimeout(() => setXpAnim(false), 800);
+    sf(`+${earned} SP earned! Grade: ${autoGrade} 🔥`); setView("attrs");
+  }
+
+  function doExport() { setExportText(btoa(JSON.stringify(data))); setShowImport(false); }
+
+  function doImport() {
+    try {
+      const parsed = JSON.parse(atob(importText.trim()));
+      if(!parsed.players) throw new Error();
+      setData(parsed); setShowImport(false); setImportText(""); sf("Save loaded! ✓");
+    } catch { sf("Invalid save data.", "error"); }
+  }
+
+  function resetCareer() {
+    if(!confirm(`Reset ${player.name}'s progress? Cannot be undone.`)) return;
+    upd(p => ({ ...p, ...BLANK() })); sf("Career reset.", "error");
+  }
+
+  const spent = player.totalEarned - player.points;
+  const aC = ATTRIBUTE_CATS.find(c => c.id===attrCat);
+  const aBC = BADGE_CATS.find(c => c.id===badgeCat);
+  const pList = Object.values(data.players);
+
+  return (
+    <div style={{background:"#0A0E1A",minHeight:"100vh",paddingBottom:40}}>
+
+      {/* Flash */}
+      {flash&&(
+        <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:1000,
+          background:flash.type==="error"?"#2D0A0A":"#0A2D1A",
+          border:`1px solid ${flash.type==="error"?"#FF4444":"#00E676"}`,
+          color:flash.type==="error"?"#FF6B6B":"#00E676",
+          padding:"10px 20px",borderRadius:8,fontWeight:700,fontSize:14,
+          boxShadow:"0 4px 20px rgba(0,0,0,0.5)",whiteSpace:"nowrap",maxWidth:"90vw"}}>
+          {flash.msg}
+        </div>
+      )}
+
+      {/* Player Sheet */}
+      {showPlayers&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:500,display:"flex",alignItems:"flex-end"}}
+          onClick={e=>{if(e.target===e.currentTarget)setShowPlayers(false);}}>
+          <div style={{width:"100%",maxWidth:640,margin:"0 auto",background:"#0D1426",borderRadius:"16px 16px 0 0",padding:"20px 20px 40px",border:"1px solid #1A2040",borderBottom:"none"}}>
+            <div style={{marginBottom:16,paddingBottom:16,borderBottom:"1px solid #1A2040"}}>
+              <div style={{fontSize:11,color:"#5A6080",textTransform:"uppercase",letterSpacing:2,marginBottom:12}}>
+                {editingPlayer?"Edit Career":"New Career"}
+              </div>
+              <input value={pName} onChange={e=>setPName(e.target.value)} placeholder="Player name..."
+                style={{width:"100%",padding:"10px 12px",background:"#0A0E1A",border:"1px solid #2A3050",
+                  borderRadius:7,color:"#E8EAF0",fontSize:15,outline:"none",marginBottom:10,boxSizing:"border-box"}}/>
+              <div style={{display:"flex",gap:6}}>
+                {POSITIONS.map(pos=>(
+                  <button key={pos} onClick={()=>setPPos(pos)} style={{
+                    flex:1,padding:"8px 0",borderRadius:6,border:`1px solid ${pPos===pos?"#FFD700":"#1A2040"}`,
+                    background:pPos===pos?"#FFD70022":"#0A0E1A",
+                    color:pPos===pos?"#FFD700":"#5A6080",fontSize:13,fontWeight:800,cursor:"pointer"}}>
+                    {pos}
+                  </button>
+                ))}
+              </div>
+              <button onClick={savePl} style={{
+                width:"100%",marginTop:10,padding:"11px 0",borderRadius:7,border:"none",
+                background:pName.trim()?"linear-gradient(135deg,#FFD700,#FFA500)":"#1A2040",
+                color:pName.trim()?"#0A0E1A":"#3A4060",fontSize:14,fontWeight:900,
+                cursor:pName.trim()?"pointer":"not-allowed"}}>
+                {editingPlayer?"Save Changes":"Create Career"}
+              </button>
+            </div>
+            <div style={{fontSize:11,color:"#5A6080",textTransform:"uppercase",letterSpacing:2,marginBottom:10}}>All Careers</div>
+            <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:240,overflowY:"auto"}}>
+              {pList.map(p=>(
+                <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",borderRadius:8,
+                  background:p.id===data.activeId?"#FFD70011":"#0A0E1A",
+                  border:`1px solid ${p.id===data.activeId?"#FFD70044":"#1A2040"}`}}>
+                  <div onClick={()=>switchPlayer(p.id)} style={{flex:1,cursor:"pointer"}}>
+                    <div style={{fontSize:14,fontWeight:700,color:p.id===data.activeId?"#FFD700":"#C0CCE0"}}>{p.name}</div>
+                    <div style={{fontSize:11,color:"#5A6080",marginTop:1}}>{p.position} · {p.gamesPlayed} games · {p.points} SP</div>
+                  </div>
+                  <button onClick={()=>openEdit(p)} style={{padding:"4px 8px",borderRadius:4,border:"1px solid #2A3050",background:"transparent",color:"#5A6080",fontSize:11,cursor:"pointer"}}>Edit</button>
+                  <button onClick={()=>delPl(p.id)} style={{padding:"4px 8px",borderRadius:4,border:"1px solid #2A1A1A",background:"transparent",color:"#5A3030",fontSize:11,cursor:"pointer"}}>✕</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
+      <div style={{background:"linear-gradient(180deg,#0D1426 0%,#0A0E1A 100%)",borderBottom:"1px solid #1A2040",padding:"20px 20px 0"}}>
+        <div style={{maxWidth:640,margin:"0 auto"}}>
+          <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between"}}>
+            <div>
+              <div style={{fontSize:10,letterSpacing:3,color:"#FFD700",fontWeight:700,textTransform:"uppercase",marginBottom:4}}>NBA 2K26 · MyCareer</div>
+              <div style={{fontSize:26,fontWeight:900,letterSpacing:"-0.5px",lineHeight:1}}>
+                Skill Point<br/><span style={{color:"#FFD700"}}>Upgrade System</span>
+              </div>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:10,color:"#5A6080",textTransform:"uppercase",letterSpacing:2}}>Available</div>
+              <div style={{fontSize:38,fontWeight:900,fontFamily:"monospace",color:xpAnim?"#00E676":"#FFD700",transition:"color 0.3s",lineHeight:1}}>{player.points}</div>
+              <div style={{fontSize:10,color:"#5A6080"}}>SP</div>
+            </div>
+          </div>
+
+          {/* Player switcher */}
+          <div style={{marginTop:14,display:"flex",gap:0,overflowX:"auto"}}>
+            {pList.map(p=>(
+              <button key={p.id} onClick={()=>switchPlayer(p.id)} style={{
+                flexShrink:0,padding:"8px 14px",border:"none",cursor:"pointer",background:"transparent",
+                borderBottom:`2px solid ${p.id===data.activeId?"#FFD700":"transparent"}`,
+                color:p.id===data.activeId?"#FFD700":"#5A6080",
+                fontSize:12,fontWeight:p.id===data.activeId?800:600,
+                transition:"all 0.15s",whiteSpace:"nowrap"}}>
+                {p.name}<span style={{marginLeft:5,fontSize:10,opacity:0.6}}>{p.position}</span>
+              </button>
+            ))}
+            <button onClick={openNew} style={{
+              flexShrink:0,padding:"8px 12px",border:"none",cursor:"pointer",
+              background:"transparent",borderBottom:"2px solid transparent",
+              color:"#3A4060",fontSize:18,lineHeight:1,marginLeft:2}}>+</button>
+          </div>
+
+          <div style={{display:"flex",gap:16,paddingTop:12,paddingBottom:14,borderTop:"1px solid #1A2040"}}>
+            {[{l:"Games",v:player.gamesPlayed},{l:"Earned",v:player.totalEarned},{l:"Spent",v:spent},{l:"Badges",v:Object.values(player.badges).filter(Boolean).length}].map(s=>(
+              <div key={s.l} style={{flex:1,textAlign:"center"}}>
+                <div style={{fontSize:18,fontWeight:800,fontFamily:"monospace"}}>{s.v}</div>
+                <div style={{fontSize:9,color:"#404870",textTransform:"uppercase",letterSpacing:1}}>{s.l}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={{maxWidth:640,margin:"0 auto",padding:"0 16px"}}>
+
+        {/* Nav tabs */}
+        <div style={{display:"flex",marginTop:16,borderRadius:8,overflow:"hidden",border:"1px solid #1A2040"}}>
+          {[{id:"attrs",l:"Attributes"},{id:"badges",l:"Badges"},{id:"log",l:"Log Game"},{id:"history",l:"History"}].map(t=>(
+            <button key={t.id} onClick={()=>setView(t.id)} style={{
+              flex:1,padding:"10px 0",border:"none",cursor:"pointer",fontSize:12,fontWeight:700,
+              background:view===t.id?"#FFD700":"#0D1426",color:view===t.id?"#0A0E1A":"#5A6080"}}>
+              {t.l}
+            </button>
+          ))}
+        </div>
+
+        {/* ── ATTRIBUTES ── */}
+        {view==="attrs"&&(
+          <div style={{marginTop:16}}>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
+              {ATTRIBUTE_CATS.map(c=>(
+                <button key={c.id} onClick={()=>setAttrCat(c.id)} style={{
+                  padding:"6px 12px",borderRadius:20,border:`1px solid ${attrCat===c.id?c.color:"#1A2040"}`,
+                  background:attrCat===c.id?c.color+"22":"#0D1426",
+                  color:attrCat===c.id?c.color:"#5A6080",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                  {c.icon} {c.label}
+                </button>
+              ))}
+            </div>
+            <div style={{background:"#0D1426",borderRadius:10,padding:16,border:"1px solid #1A2040"}}>
+              <div style={{fontSize:10,color:"#5A6080",textTransform:"uppercase",letterSpacing:2,marginBottom:10}}>Tap rating to set baseline · cost scales with rating</div>
+              {aC.attrs.map(attr=>{
+                const val=player.attrs[attr]??70;
+                const cost=attrCost(val);
+                const ca=player.points>=cost;
+                const isEd=attrEdit===attr;
+                return(
+                  <div key={attr} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",marginBottom:6,borderRadius:8,background:"#0A0E1A",border:"1px solid #1A2040"}}>
+                    <div style={{flex:1,fontSize:13,color:"#C0CCE0",fontWeight:600}}>{attr}</div>
+                    {isEd?(
+                      <input autoFocus type="number" min="25" max="99" defaultValue={val}
+                        onBlur={e=>setBase(attr,e.target.value)}
+                        onKeyDown={e=>{if(e.key==="Enter")setBase(attr,e.target.value);if(e.key==="Escape")setAttrEdit(null);}}
+                        style={{width:52,padding:"4px 6px",background:"#0D1426",border:`1px solid ${aC.color}`,
+                          borderRadius:4,color:aC.color,fontFamily:"monospace",fontSize:15,fontWeight:800,textAlign:"center",outline:"none"}}/>
+                    ):(
+                      <div onClick={()=>setAttrEdit(attr)} style={{width:36,textAlign:"center",fontSize:16,fontWeight:900,fontFamily:"monospace",cursor:"pointer",
+                        color:val>=90?"#FF6B35":val>=85?"#FFD700":val>=80?"#00D4FF":val>=70?"#8090B0":"#5A6080",
+                        borderBottom:"1px dashed #2A3050"}}>
+                        {val}
+                      </div>
+                    )}
+                    <div style={{width:72,height:6,background:"#1A2040",borderRadius:3,overflow:"hidden"}}>
+                      <div style={{height:"100%",width:`${Math.max(0,Math.min(100,(val-25)/74*100))}%`,background:aC.color,borderRadius:3,transition:"width 0.3s"}}/>
+                    </div>
+                    <div style={{fontSize:10,color:"#FFD700",fontFamily:"monospace",minWidth:28,textAlign:"right"}}>{cost}sp</div>
+                    <button onClick={()=>upgradeAttr(attr)} style={{
+                      padding:"4px 10px",borderRadius:4,border:"none",
+                      background:ca?aC.color:"#1A2040",color:ca?"#0A0E1A":"#3A4060",
+                      fontSize:11,fontWeight:800,cursor:ca?"pointer":"not-allowed"}}>+1</button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ── BADGES ── */}
+        {view==="badges"&&(
+          <div style={{marginTop:16}}>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
+              {BADGE_CATS.map(c=>(
+                <button key={c.id} onClick={()=>setBadgeCat(c.id)} style={{
+                  padding:"6px 12px",borderRadius:20,border:`1px solid ${badgeCat===c.id?c.color:"#1A2040"}`,
+                  background:badgeCat===c.id?c.color+"22":"#0D1426",
+                  color:badgeCat===c.id?c.color:"#5A6080",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                  {c.label}
+                </button>
+              ))}
+            </div>
+            {/* Tier cost legend */}
+            <div style={{display:"flex",gap:5,marginBottom:6}}>
+              {BADGE_TIERS.map(t=>(
+                <div key={t} style={{flex:1,textAlign:"center",padding:"5px 2px",borderRadius:6,background:"#0D1426",border:`1px solid ${BTC[t]}44`}}>
+                  <div style={{fontSize:t==="Legendary"?8:10,fontWeight:800,color:BTC[t]}}>{t==="Legendary"?"🔱Lgd":t}</div>
+                  <div style={{fontSize:9,color:"#5A6080",fontFamily:"monospace"}}>{BTCost[t]}sp</div>
+                </div>
+              ))}
+            </div>
+            <div style={{fontSize:10,color:"#3A4060",marginBottom:10,textAlign:"right"}}>🔱 Legendary requires HoF first</div>
+            <div style={{background:"#0D1426",borderRadius:10,padding:12,border:"1px solid #1A2040",display:"flex",flexDirection:"column",gap:6}}>
+              {aBC.badges.map(badge=>{
+                const cur=player.badges[badge];
+                const cI=cur?BADGE_TIERS.indexOf(cur):-1;
+                const nT=BADGE_TIERS[cI+1];
+                const nC=nT?BTCost[nT]:null;
+                const ca=nC&&player.points>=nC;
+                const isLeg=nT==="Legendary";
+                const isSet=badgeSetMode===badge;
+                return(
+                  <div key={badge} style={{borderRadius:8,overflow:"hidden",border:`1px solid ${cur==="Legendary"?"#FF950066":cur?BTC[cur]+"44":"#1A2040"}`}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:cur==="Legendary"?"#1A0A00":cur?"#0A0E1A":"#080C18"}}>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13,fontWeight:700,color:cur==="Legendary"?"#FF9500":cur?BTC[cur]:"#8090B0"}}>
+                          {cur==="Legendary"&&<span style={{marginRight:4}}>🔱</span>}{badge}
+                        </div>
+                        {cur&&(
+                          <div style={{display:"flex",gap:3,marginTop:3,flexWrap:"wrap"}}>
+                            {BADGE_TIERS.map((t,i)=>(
+                              <div key={t} style={{fontSize:9,padding:"1px 5px",borderRadius:3,fontWeight:800,
+                                background:i<=cI?BTC[t]+"33":"#1A2040",color:i<=cI?BTC[t]:"#2A3050",
+                                border:`1px solid ${i<=cI?BTC[t]+"55":"#1A2040"}`}}>{t}</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{display:"flex",gap:5,alignItems:"center"}}>
+                        <button onClick={()=>setBadgeSetMode(isSet?null:badge)} style={{
+                          padding:"4px 7px",borderRadius:4,border:`1px solid ${isSet?"#FFD700":"#2A3050"}`,
+                          background:isSet?"#FFD70022":"transparent",
+                          color:isSet?"#FFD700":"#3A4060",fontSize:10,fontWeight:700,cursor:"pointer"}}>
+                          {isSet?"✕":"SET"}
+                        </button>
+                        {!isSet&&(nT?(
+                          <button onClick={()=>buyBadge(badge,nT)} style={{
+                            padding:"5px 10px",borderRadius:5,border:"none",
+                            background:isLeg?(ca?"linear-gradient(135deg,#FF9500,#FF6B00)":"#1A1A0A"):(ca?BTC[nT]:"#1A2040"),
+                            color:ca?"#0A0E1A":"#3A4060",fontSize:11,fontWeight:800,
+                            cursor:ca?"pointer":"not-allowed",whiteSpace:"nowrap",
+                            boxShadow:isLeg&&ca?"0 0 8px #FF950066":"none"}}>
+                            {cur?"↑":"Unlock"} {nT}{isLeg?" 🔱":""}
+                          </button>
+                        ):(
+                          <span style={{fontSize:11,color:"#FF9500",fontWeight:800}}>🔱 MAX</span>
+                        ))}
+                      </div>
+                    </div>
+                    {isSet&&(
+                      <div style={{padding:"10px 12px",background:"#0D1020",borderTop:"1px solid #1A2040"}}>
+                        <div style={{fontSize:10,color:"#FFD700",marginBottom:7,textTransform:"uppercase",letterSpacing:1}}>Set existing — no SP cost</div>
+                        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                          {BADGE_TIERS.map(t=>(
+                            <button key={t} onClick={()=>{setBadgeBase(badge,t);setBadgeSetMode(null);}} style={{
+                              padding:"6px 10px",borderRadius:5,border:`1px solid ${BTC[t]}66`,
+                              background:cur===t?BTC[t]+"33":"#0A0E1A",
+                              color:BTC[t],fontSize:12,fontWeight:800,cursor:"pointer"}}>
+                              {t}{cur===t?" ✓":""}
+                            </button>
+                          ))}
+                          {cur&&(
+                            <button onClick={()=>{upd(p=>{const b={...p.badges};delete b[badge];return{...p,badges:b};});setBadgeSetMode(null);sf(`${badge} cleared.`,"error");}} style={{
+                              padding:"6px 10px",borderRadius:5,border:"1px solid #3A1A1A",
+                              background:"transparent",color:"#5A3030",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ── LOG GAME ── */}
+        {view==="log"&&(
+          <div style={{marginTop:16}}>
+            <div style={{background:"#0D1426",borderRadius:10,padding:16,border:"1px solid #1A2040"}}>
+              <div style={{fontSize:11,color:"#5A6080",textTransform:"uppercase",letterSpacing:2,marginBottom:14}}>Log Game Stats → Earn SP</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                {Object.entries(STAT_POINTS).map(([key,cfg])=>(
+                  <div key={key}>
+                    <div style={{fontSize:10,color:key==="to"?"#FF6B6B":"#5A6080",marginBottom:3,textTransform:"uppercase",letterSpacing:1}}>
+                      {cfg.label} <span style={{color:"#2A3050"}}>({cfg.hint})</span>
+                    </div>
+                    <input type="number" min="0" value={earnForm[key]}
+                      onChange={e=>setEarnForm(f=>({...f,[key]:e.target.value}))} placeholder="0"
+                      style={{width:"100%",padding:"8px 10px",background:"#0A0E1A",
+                        border:`1px solid ${key==="to"?"#3A1A1A":"#1A2040"}`,borderRadius:6,
+                        color:key==="to"?"#FF8080":"#E8EAF0",fontSize:16,fontFamily:"monospace",fontWeight:700,outline:"none"}}/>
+                  </div>
+                ))}
+              </div>
+              <div style={{marginTop:12}}>
+                <div style={{fontSize:10,color:"#5A6080",marginBottom:6,textTransform:"uppercase",letterSpacing:1}}>Auto Grade</div>
+                <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"#0A0E1A",borderRadius:8,border:"1px solid #1A2040"}}>
+                  <div style={{fontSize:28,fontWeight:900,fontFamily:"monospace",minWidth:44,textAlign:"center",color:gc(autoGrade)}}>{autoGrade}</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,color:"#8090B0"}}>
+                      {autoGrade==="A+"&&"Outstanding — elite efficiency"}
+                      {autoGrade==="A"&&"Great game — strong all-around"}
+                      {autoGrade==="A-"&&"Solid — positive impact"}
+                      {autoGrade==="B+"&&"Decent — room to improve"}
+                      {autoGrade==="B"&&"Below average — TOs hurting you"}
+                    </div>
+                    <div style={{fontSize:11,color:"#3A4060",marginTop:2}}>Bonus: {GRADE_BONUS[autoGrade]>0?`+${GRADE_BONUS[autoGrade]} SP`:"No bonus"}</div>
+                  </div>
+                </div>
+              </div>
+              <div style={{marginTop:12,padding:12,background:"#0A0E1A",borderRadius:8,
+                border:`1px solid ${earned>0?"#FFD70044":"#1A2040"}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <span style={{fontSize:13,color:"#5A6080"}}>Points to earn:</span>
+                <span style={{fontSize:28,fontWeight:900,fontFamily:"monospace",color:earned>0?"#FFD700":"#2A3050"}}>+{earned} SP</span>
+              </div>
+              <button onClick={submitGame} style={{width:"100%",marginTop:12,padding:14,border:"none",borderRadius:8,
+                background:earned>0?"linear-gradient(135deg,#FFD700,#FFA500)":"#1A2040",
+                color:earned>0?"#0A0E1A":"#3A4060",fontSize:15,fontWeight:900,
+                cursor:earned>0?"pointer":"not-allowed",textTransform:"uppercase",letterSpacing:1}}>
+                Submit Game
+              </button>
+            </div>
+            <div style={{marginTop:12,background:"#0D1426",borderRadius:10,padding:14,border:"1px solid #1A2040"}}>
+              <div style={{fontSize:10,color:"#5A6080",textTransform:"uppercase",letterSpacing:2,marginBottom:8}}>Grade Formula</div>
+              <div style={{fontSize:10,color:"#3A4060",fontStyle:"italic",marginBottom:6}}>Eff = PTS/5 + AST/3 + REB/4 + STL + BLK + Win×0.5 − TO×1.5</div>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                {[["A+","≥8","#FFD700"],["A","≥6","#00E676"],["A-","≥4","#00D4FF"],["B+","≥2","#8090B0"],["B","<2","#5A6080"]].map(([g,t,c])=>(
+                  <div key={g} style={{display:"flex",gap:4,alignItems:"center"}}>
+                    <span style={{fontSize:12,fontWeight:800,color:c}}>{g}</span>
+                    <span style={{fontSize:10,color:"#3A4060"}}>{t}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── HISTORY ── */}
+        {view==="history"&&(
+          <div style={{marginTop:16}}>
+            {player.history.length===0?(
+              <div style={{textAlign:"center",padding:40,color:"#3A4060",fontSize:14}}>No history yet.</div>
+            ):(
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {player.history.map(entry=>(
+                  <div key={entry.id} style={{background:"#0D1426",borderRadius:8,padding:12,
+                    border:`1px solid ${entry.pts>0?"#1A3020":"#2A1A1A"}`,display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                    <div style={{flex:1,marginRight:12}}>
+                      <div style={{fontSize:11,color:"#5A6080",marginBottom:3}}>
+                        {entry.game?`Game #${entry.game}`:"Upgrade"} · {entry.date}
+                        {entry.grade&&<span style={{color:gc(entry.grade),marginLeft:6}}>{entry.grade}</span>}
+                      </div>
+                      <div style={{fontSize:12,color:"#7080A0"}}>{entry.stats}</div>
+                    </div>
+                    <div style={{fontSize:18,fontWeight:900,fontFamily:"monospace",color:entry.pts>0?"#00E676":"#FF6B6B",whiteSpace:"nowrap"}}>
+                      {entry.pts>0?"+":""}{entry.pts}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button onClick={resetCareer} style={{marginTop:12,width:"100%",padding:10,background:"transparent",border:"1px solid #2A1A1A",borderRadius:8,color:"#5A3030",cursor:"pointer",fontSize:12}}>
+              Reset {player.name}'s Progress
+            </button>
+          </div>
+        )}
+
+        {/* ── SAVE & BACKUP ── */}
+        <div style={{marginTop:16,background:"#0D1426",borderRadius:10,padding:14,border:"1px solid #1F3040",marginBottom:8}}>
+          <div style={{fontSize:10,color:"#5A6080",textTransform:"uppercase",letterSpacing:2,marginBottom:4}}>💾 Save & Backup</div>
+          <div style={{fontSize:12,color:"#5A6080",marginBottom:10,lineHeight:1.6}}>
+            Saves automatically. Use <span style={{color:"#FFD700"}}>Export</span> to back up all careers or move to another device.
+          </div>
+          {!showImport&&(
+            <div style={{marginBottom:8}}>
+              <button onClick={doExport} style={{width:"100%",padding:"11px 0",borderRadius:7,border:"1px solid #FFD70066",background:"#FFD70016",color:"#FFD700",fontSize:14,fontWeight:800,cursor:"pointer"}}>
+                📋 Export All Careers
+              </button>
+              {exportText&&(
+                <div style={{marginTop:8}}>
+                  <div style={{fontSize:11,color:"#FFD700",marginBottom:4}}>Tap to select all, then copy:</div>
+                  <textarea readOnly value={exportText} rows={3} onFocus={e=>e.target.select()}
+                    style={{width:"100%",padding:"8px 10px",background:"#0A0E1A",border:"1px solid #FFD70044",
+                      borderRadius:6,color:"#FFD700",fontSize:11,fontFamily:"monospace",resize:"none",outline:"none"}}/>
+                </div>
+              )}
+            </div>
+          )}
+          <button onClick={()=>{setShowImport(v=>!v);setExportText("");}} style={{
+            width:"100%",padding:"11px 0",borderRadius:7,
+            border:`1px solid ${showImport?"#00D4FF88":"#00D4FF44"}`,
+            background:showImport?"#00D4FF22":"#00D4FF0A",
+            color:"#00D4FF",fontSize:14,fontWeight:800,cursor:"pointer"}}>
+            {showImport?"✕ Cancel":"📂 Import Save"}
+          </button>
+          {showImport&&(
+            <div style={{marginTop:8}}>
+              <textarea value={importText} onChange={e=>setImportText(e.target.value)}
+                placeholder="Paste your save data here..." rows={3}
+                style={{width:"100%",padding:"8px 10px",background:"#0A0E1A",border:"1px solid #00D4FF44",
+                  borderRadius:6,color:"#C0D0E0",fontSize:12,fontFamily:"monospace",resize:"vertical",outline:"none"}}/>
+              <button onClick={doImport} style={{
+                width:"100%",marginTop:6,padding:"11px 0",borderRadius:7,border:"none",
+                background:importText.trim()?"linear-gradient(135deg,#00D4FF,#0090CC)":"#1A2040",
+                color:importText.trim()?"#0A0E1A":"#3A4060",fontSize:14,fontWeight:800,
+                cursor:importText.trim()?"pointer":"not-allowed"}}>
+                Load Save
+              </button>
+            </div>
+          )}
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
